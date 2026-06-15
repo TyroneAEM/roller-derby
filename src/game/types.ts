@@ -87,4 +87,5 @@ export interface GameState {
   grandSlam: GrandSlamState;
   screenFlash: number; // alpha of white overlay (0 = off)
   pushCooldown: number; // ms remaining before push is usable again
+  sinBin: number;      // ms remaining in penalty box (0 = not in penalty)
 }

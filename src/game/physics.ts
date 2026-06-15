@@ -15,7 +15,7 @@ const POWERUP_COLLECT_LANE = 0.22;
 const POWERUP_RESPAWN_MS = 10_000;
 const SPEED_EFFECT_MS = 8_000;
 const MULTIPLIER_EFFECT_MS = 12_000;
-const PUSH_COOLDOWN_MS = 4_000;
+const PUSH_COOLDOWN_MS = 0;
 const PUSH_RANGE_TRACK = 0.06;
 const PUSH_RANGE_LANE = 0.35;
 const PUSH_STUN_MS = 1200;
@@ -60,11 +60,23 @@ function aiBlockerMove(blocker: Character, playerJammer: Character, dt: number):
       laneVelocity: Math.abs(newVelocity) < 0.00001 ? 0 : newVelocity,
     };
   }
+
+  // Each blocker gets a unique spread index from its id (e.g. "kitty-blocker-2" → 2)
+  const idx = parseInt(blocker.id.split('-').pop() ?? '0');
   const isOpposing = blocker.team !== playerJammer.team;
-  const targetPos = isOpposing
-    ? wrapPos(playerJammer.trackPos + 0.025)
-    : wrapPos(playerJammer.trackPos + 0.015);
-  const targetLane = isOpposing ? playerJammer.lane : blocker.lane;
+
+  // Opposing blockers form a wall ahead of the jammer, spread 0.04 apart
+  // Own-team blockers trail behind the jammer, spread 0.04 apart
+  const posOffset = isOpposing
+    ? 0.03 + idx * 0.06   // ahead: 0.03, 0.09, 0.15, 0.21
+    : -(0.03 + idx * 0.04); // behind: -0.03, -0.07, -0.11, -0.15
+  const targetPos = wrapPos(playerJammer.trackPos + posOffset);
+
+  // Alternate lanes across the track width so blockers form a staggered wall
+  const targetLane = isOpposing
+    ? (idx % 2 === 0 ? 0.28 : 0.72)   // inner / outer alternating
+    : (idx % 2 === 0 ? 0.35 : 0.65);  // slightly narrower spread for own team
+
   const dPos = trackDelta(blocker.trackPos, targetPos);
   const dLane = targetLane - blocker.lane;
   return {
@@ -75,17 +87,37 @@ function aiBlockerMove(blocker: Character, playerJammer: Character, dt: number):
   };
 }
 
-function aiJammerMove(jammer: Character, dt: number): Character {
-  if (jammer.stunned > 0) return { ...jammer, stunned: jammer.stunned - dt };
+function aiJammerMove(jammer: Character, dt: number, slow = 1): Character {
+  if (jammer.stunned > 0) {
+    const newLane = Math.max(0.05, Math.min(0.95, jammer.lane + jammer.laneVelocity * dt));
+    const newVelocity = jammer.laneVelocity * (1 - 0.006 * dt);
+    return {
+      ...jammer,
+      stunned: jammer.stunned - dt,
+      lane: newLane,
+      laneVelocity: Math.abs(newVelocity) < 0.00001 ? 0 : newVelocity,
+    };
+  }
   return {
     ...jammer,
-    trackPos: wrapPos(jammer.trackPos + AI_JAMMER_SPEED * dt),
+    trackPos: wrapPos(jammer.trackPos + AI_JAMMER_SPEED * slow * dt),
     lane: jammer.lane + (0.5 - jammer.lane) * 0.001 * dt,
+    laneVelocity: 0,
   };
 }
 
-function refMove(ref: Character, dt: number): Character {
-  return { ...ref, trackPos: wrapPos(ref.trackPos + REF_SPEED * dt) };
+function refMove(ref: Character, dt: number, slow = 1): Character {
+  if (ref.stunned > 0) {
+    const newLane = Math.max(0.05, Math.min(0.95, ref.lane + ref.laneVelocity * dt));
+    const newVelocity = ref.laneVelocity * (1 - 0.006 * dt);
+    return {
+      ...ref,
+      stunned: ref.stunned - dt,
+      lane: newLane,
+      laneVelocity: Math.abs(newVelocity) < 0.00001 ? 0 : newVelocity,
+    };
+  }
+  return { ...ref, trackPos: wrapPos(ref.trackPos + REF_SPEED * slow * dt), laneVelocity: 0 };
 }
 
 function checkCollision(a: Character, b: Character): boolean {
@@ -115,6 +147,14 @@ export function updatePhysics(
   let score = { ...state.score };
   let message = state.message;
   let messageTtl = state.messageTtl - dt;
+
+  // ── Sin bin countdown: keep player jammer stunned while serving penalty ──
+  let sinBin = Math.max(0, state.sinBin - dt);
+  if (sinBin > 0) {
+    chars = chars.map(c =>
+      c.id === playerJammer.id ? { ...c, stunned: Math.max(c.stunned, dt + 16) } : c
+    );
+  }
   let initialPassDone = state.initialPassDone;
   let leadJammer = state.leadJammer;
   let powerUps = state.powerUps.map(p => ({ ...p, pulse: p.pulse + dt }));
@@ -145,21 +185,38 @@ export function updatePhysics(
   // ── Push cooldown ──
   let pushCooldown = Math.max(0, state.pushCooldown - dt);
 
-  // ── Push action: shove nearby opposing blockers away ──
-  if (activatePush && pushCooldown === 0) {
+  // ── Push action: shove nearby opposing blockers, jammer, and refs ──
+  if (activatePush) {
     const jammer = chars.find(c => c.id === playerJammer.id)!;
     let pushedAny = false;
+    let hitJammer = false;
+    let hitRef = false;
     chars = chars.map(c => {
-      if (c.team !== aiJammerTeam || (c.role !== 'blocker' && c.role !== 'pivot')) return c;
       if (c.stunned > 0) return c;
+      const isOpposingPlayer = c.team === aiJammerTeam &&
+        (c.role === 'blocker' || c.role === 'pivot' || c.role === 'jammer');
+      const isRef = c.role === 'ref';
+      if (!isOpposingPlayer && !isRef) return c;
       const dTrack = Math.abs(trackDelta(jammer.trackPos, c.trackPos));
       const dLane = Math.abs(jammer.lane - c.lane);
       if (dTrack < PUSH_RANGE_TRACK && dLane < PUSH_RANGE_LANE) {
         const pos = trackToScreen(c.trackPos, c.lane, geo);
         const pushDir = c.lane > 0.5 ? 1 : -1;
+        if (isRef) {
+          particles = [...particles, ...burst(pos.x, pos.y, 8, ['#f97316', '#fbbf24', '#ffffff', '#ef4444'], 5, 0.8, 8)];
+          hitRef = true;
+          pushedAny = true;
+          sinBin = 5000;
+          return { ...c, laneVelocity: pushDir * 0.0025, stunned: PUSH_STUN_MS };
+        }
+        if (c.role === 'jammer') {
+          particles = [...particles, ...burst(pos.x, pos.y, 8, ['#a855f7', '#ffd700', '#ffffff', '#ff4444'], 5, 0.8, 8)];
+          hitJammer = true;
+          pushedAny = true;
+          return { ...c, laneVelocity: pushDir * 0.003, stunned: PUSH_STUN_MS * 1.4 };
+        }
         particles = [...particles, ...burst(pos.x, pos.y, 5, ['#ff6b6b', '#ffd700', '#ffffff', '#ff4444'], 4, 0.6, 6)];
         pushedAny = true;
-        // laneVelocity drives the smooth shove animation in aiBlockerMove during stun
         return { ...c, laneVelocity: pushDir * 0.0018, stunned: PUSH_STUN_MS };
       }
       return c;
@@ -167,14 +224,16 @@ export function updatePhysics(
     if (pushedAny) {
       audio.push();
       pushCooldown = PUSH_COOLDOWN_MS;
-      message = '💪 SHOVE!';
-      messageTtl = 700;
+      message = hitRef ? '🚨 SIN BIN! 5s' : hitJammer ? '🌟 JAMMER HIT!' : '💪 SHOVE!';
+      messageTtl = 900;
     }
   }
 
+  const mobileSlow = canvasW < 600 ? 0.72 : 1;
   const speedMult =
     (turbo.active ? 2.5 : 1) *
-    (effects.speed > 0 ? 2.0 : 1);
+    (effects.speed > 0 ? 2.0 : 1) *
+    mobileSlow;
 
   // ── Move player jammer (auto-skates clockwise; joystick steers) ──
   chars = chars.map(c => {
@@ -198,8 +257,8 @@ export function updatePhysics(
   const currentPlayer = chars.find(c => c.id === playerJammer.id)!;
   chars = chars.map(c => {
     if (c.team === state.playerTeam && c.role === 'jammer') return c;
-    if (c.role === 'ref') return refMove(c, dt);
-    if (c.role === 'jammer') return aiJammerMove(c, dt);
+    if (c.role === 'ref') return refMove(c, dt, mobileSlow);
+    if (c.role === 'jammer') return aiJammerMove(c, dt, mobileSlow);
     return aiBlockerMove(c, currentPlayer, dt);
   });
 
@@ -232,6 +291,23 @@ export function updatePhysics(
       }
       return c;
     });
+  }
+
+  // ── Collision: player jammer vs opposing jammer ──
+  const playerAfterBlockers = chars.find(c => c.id === playerJammer.id)!;
+  if (playerAfterBlockers.stunned === 0) {
+    const aiJammer = chars.find(c => c.team === aiJammerTeam && c.role === 'jammer');
+    if (aiJammer && aiJammer.stunned === 0 && checkCollision(playerAfterBlockers, aiJammer)) {
+      const pos = trackToScreen(playerAfterBlockers.trackPos, playerAfterBlockers.lane, geo);
+      audio.hit();
+      particles = [...particles, ...burst(pos.x, pos.y, 5, ['#a855f7', '#ffd700', '#ff4444'], 4, 0.6, 6)];
+      // Both jammers get briefly stunned on contact
+      chars = chars.map(c => {
+        if (c.id === playerJammer.id) return { ...c, stunned: 350 };
+        if (c.id === aiJammer.id) return { ...c, stunned: 500, laneVelocity: (c.lane > 0.5 ? 1 : -1) * 0.0015 };
+        return c;
+      });
+    }
   }
 
   // ── Power-up collection ──
@@ -367,5 +443,6 @@ export function updatePhysics(
     grandSlam,
     screenFlash,
     pushCooldown,
+    sinBin,
   };
 }

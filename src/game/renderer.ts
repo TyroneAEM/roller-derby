@@ -179,6 +179,68 @@ function drawEffectIndicators(ctx: CanvasRenderingContext2D, state: GameState, W
   ctx.restore();
 }
 
+// ── Sin bin box ───────────────────────────────────────────────
+
+function drawSinBin(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  playerJammerId: string,
+  W: number,
+  H: number
+) {
+  if (state.sinBin <= 0) return;
+  const playerJammer = state.characters.find(c => c.id === playerJammerId);
+  if (!playerJammer) return;
+
+  const hudH = Math.max(44, H * 0.10);
+  const boxW = Math.max(90, W * 0.16);
+  const boxH = Math.max(60, H * 0.13);
+  const bx = W / 2 - boxW / 2;
+  const by = hudH + 6;
+  const secs = Math.ceil(state.sinBin / 1000);
+  const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 200);
+
+  ctx.save();
+
+  // Box shadow glow
+  ctx.shadowColor = '#ef4444';
+  ctx.shadowBlur = 14;
+  ctx.globalAlpha = 0.95;
+  ctx.beginPath();
+  ctx.roundRect(bx, by, boxW, boxH, 10);
+  ctx.fillStyle = '#450a0a';
+  ctx.fill();
+  ctx.strokeStyle = secs <= 2 ? `rgba(255,0,0,${pulse})` : '#ef4444';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // "SIN BIN" label
+  const labelFs = Math.max(9, W * 0.017);
+  ctx.font = `bold ${labelFs}px monospace`;
+  ctx.fillStyle = '#ef4444';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.globalAlpha = 1;
+  ctx.fillText('🚨 SIN BIN', W / 2, by + 4);
+
+  // Player jammer emoji — bobbing slightly
+  const emojiFs = Math.max(18, boxH * 0.38);
+  ctx.font = `${emojiFs}px sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(Date.now() / 350);
+  ctx.fillText(playerJammer.emoji, W / 2, by + boxH * 0.57);
+
+  // Countdown
+  ctx.globalAlpha = 1;
+  ctx.font = `bold ${Math.max(11, W * 0.021)}px monospace`;
+  ctx.fillStyle = secs <= 2 ? '#ff4444' : '#ffffff';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(`${secs}s`, W / 2, by + boxH - 3);
+
+  ctx.restore();
+}
+
 // ── Main exports ──────────────────────────────────────────────
 
 export function render(
@@ -215,6 +277,8 @@ export function render(
   const jammers = state.characters.filter(c => c.role === 'jammer');
 
   for (const c of [...refs, ...blockers, ...jammers]) {
+    // Player jammer sits in the sin bin box instead of on the track
+    if (c.id === playerJammerId && state.sinBin > 0) continue;
     const pos = trackToScreen(c.trackPos, c.lane, geo);
     const isPlayer = c.id === playerJammerId;
     drawCharacter(
@@ -223,6 +287,7 @@ export function render(
     );
   }
 
+  drawSinBin(ctx, state, playerJammerId, W, H);
   drawParticles(ctx, state.particles);
   drawGrandSlam(ctx, state, W, H, timestamp);
 
@@ -284,11 +349,11 @@ export function renderHUD(ctx: CanvasRenderingContext2D, state: GameState, W: nu
     ctx.fillText(state.leadJammer === 'kitty' ? '⭐ Lead: 🐱' : '⭐ Lead: 🦄', W / 2, hudH - 5);
   }
 
-  if (!state.initialPassDone) {
+  if (!state.initialPassDone && state.sinBin === 0) {
     ctx.font = `${Math.max(11, fs * 0.68)}px sans-serif`;
     ctx.fillStyle = 'rgba(255,255,100,0.85)';
     ctx.textAlign = 'center';
-    ctx.fillText('⬆️ Speed up · ⬅️➡️ Change lane · Skate through the pack!', W / 2, hudH + 16);
+    ctx.fillText('⬆️⬇️ Lane · ⬅️➡️ Speed · A Turbo · Skate through the pack!', W / 2, hudH + 16);
   }
 
   drawEffectIndicators(ctx, state, W, H);
@@ -440,11 +505,11 @@ export function renderPortraitWarning(ctx: CanvasRenderingContext2D, W: number, 
 // Extra bottom padding so buttons clear Safari's bottom chrome (~49px) plus original 16px margin
 const BTN_PAD = 76;
 
-// Push button — always visible during jam (bottom-right)
+// Push button — always visible during jam (bottom-right), no cooldown
 export function drawPushBtn(
   ctx: CanvasRenderingContext2D,
   W: number, H: number,
-  pushCooldown: number
+  _pushCooldown: number
 ) {
   const size = Math.min(W, H) * 0.16;
   const x = W - size - 16;
@@ -453,20 +518,11 @@ export function drawPushBtn(
   ctx.globalAlpha = 0.9;
   ctx.beginPath();
   ctx.roundRect(x, y, size, size, 12);
-  ctx.fillStyle = pushCooldown > 0 ? '#374151' : '#b45309';
+  ctx.fillStyle = '#b45309';
   ctx.fill();
-  ctx.strokeStyle = pushCooldown > 0 ? '#6b7280' : '#fbbf24';
+  ctx.strokeStyle = '#fbbf24';
   ctx.lineWidth = 2;
   ctx.stroke();
-
-  // Cooldown arc
-  if (pushCooldown > 0) {
-    const progress = 1 - pushCooldown / 4000;
-    ctx.globalAlpha = 0.7;
-    ctx.beginPath();
-    ctx.arc(x + size / 2, y + size / 2, size * 0.44, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
-    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3; ctx.stroke();
-  }
 
   ctx.globalAlpha = 1;
   ctx.font = `${size * 0.38}px sans-serif`;
@@ -474,7 +530,8 @@ export function drawPushBtn(
   ctx.fillText('💪', x + size / 2, y + size * 0.37);
   ctx.font = `bold ${size * 0.16}px sans-serif`;
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(pushCooldown > 0 ? `${Math.ceil(pushCooldown / 1000)}s` : 'PUSH', x + size / 2, y + size * 0.74);
+  const pushLabel = W > 600 ? 'PUSH(S)' : 'PUSH';
+  ctx.fillText(pushLabel, x + size / 2, y + size * 0.74);
   ctx.restore();
 }
 
@@ -550,13 +607,58 @@ export function drawTurboBtn(
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('🚀', x + size / 2, y + size * 0.38);
 
+  const baseLabel = W > 600 ? 'TURBO(A)' : 'TURBO';
   const label = turboActive
     ? `${Math.ceil(turboDuration / 1000)}s`
     : turboCooldown > 0
     ? `${Math.ceil(turboCooldown / 1000)}s`
-    : 'TURBO';
+    : baseLabel;
   ctx.font = `bold ${size * 0.17}px sans-serif`;
   ctx.fillStyle = '#ffffff';
   ctx.fillText(label, x + size / 2, y + size * 0.75);
+  ctx.restore();
+}
+
+// Keyboard legend — shown on desktop (W > 600) during gameplay
+export function renderKeyboardLegend(ctx: CanvasRenderingContext2D, W: number, H: number) {
+  if (W < 600) return;
+
+  const rows = [
+    ['↑ / ↓', 'Up/Down'],
+    ['← / →', 'Speed'],
+    ['A',     'Turbo'],
+    ['S',     'Push'],
+    ['Space', 'Stop Jam'],
+  ];
+
+  ctx.save();
+  const fs = 11;
+  const lineH = 17;
+  const padX = 10, padY = 8;
+  const col1W = 48;
+  const col2W = 64;
+  const boxW = col1W + col2W + padX * 2;
+  const boxH = rows.length * lineH + padY * 2;
+  const x = 14;
+  const y = H - BTN_PAD - boxH - 8;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.beginPath();
+  ctx.roundRect(x, y, boxW, boxH, 7);
+  ctx.fill();
+
+  ctx.font = `${fs}px monospace`;
+  ctx.textBaseline = 'top';
+
+  rows.forEach(([key, action], i) => {
+    const rowY = y + padY + i * lineH;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(255,220,80,0.9)';
+    ctx.fillText(key, x + padX + col1W, rowY);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillText(action, x + padX + col1W + 8, rowY);
+  });
+
   ctx.restore();
 }

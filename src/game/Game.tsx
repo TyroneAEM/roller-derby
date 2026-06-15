@@ -11,6 +11,7 @@ import {
   renderMenu,
   renderGameOver,
   renderPortraitWarning,
+  renderKeyboardLegend,
   drawTurboBtn,
   drawPushBtn,
   drawCalloffBtnAbovePush,
@@ -69,8 +70,9 @@ export default function Game() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    const w = canvas.offsetWidth;
-    const h = canvas.offsetHeight;
+    // Fall back to window dimensions if CSS hasn't resolved yet (Safari timing issue)
+    const w = canvas.offsetWidth || window.innerWidth;
+    const h = canvas.offsetHeight || window.innerHeight;
     if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
       canvas.width = Math.round(w * dpr);
       canvas.height = Math.round(h * dpr);
@@ -144,6 +146,7 @@ export default function Game() {
       ctx.clearRect(0, 0, W, H);
       render(ctx, next, timestamp, getPlayerJammerId(), W, H);
       renderHUD(ctx, next, W, H);
+      renderKeyboardLegend(ctx, W, H);
       renderCountdown(ctx, next.countdownTimer, W, H);
     } else if (next.phase === 'initial_pass' || next.phase === 'scoring') {
       const activateTurbo = turboTouchRef.current;
@@ -166,7 +169,7 @@ export default function Game() {
       renderHUD(ctx, next, W, H);
 
       // Always show joystick: faint at home when idle, bright when touched
-      const joyHomeX = JOYSTICK_RADIUS - 24;
+      const joyHomeX = JOYSTICK_RADIUS + 10; // keep full ring on-screen (ring radius = 70)
       const joyHomeY = H * 0.58;
       if (joy.active) {
         drawJoystick(ctx, joy.baseX, joy.baseY, joy.tipX, joy.tipY, true);
@@ -178,6 +181,7 @@ export default function Game() {
       if (next.leadJammer === next.playerTeam && next.phase === 'scoring') {
         drawCalloffBtnAbovePush(ctx, W, H);
       }
+      renderKeyboardLegend(ctx, W, H);
     } else if (next.phase === 'jam_end') {
       ctx.clearRect(0, 0, W, H);
       render(ctx, next, timestamp, getPlayerJammerId(), W, H);
@@ -293,14 +297,23 @@ export default function Game() {
   }, []);
 
   // Keyboard controls
+  // ↑↓ = visually up/down on screen | ←→ = speed (left=brake, right=boost)
+  // A = Turbo | S = Push | Space = Stop Jam
   useEffect(() => {
     const held: Record<string, boolean> = {};
     const update = () => {
+      // Determine which half of the oval the player is on so ↑/↓ always mean
+      // visually up/down on screen (top half: outer = up; bottom half: inner = up)
+      const chars = stateRef.current.characters;
+      const playerTeam = stateRef.current.playerTeam;
+      const playerJammer = chars.find(c => c.team === playerTeam && c.role === 'jammer');
+      const onTopHalf = (playerJammer?.trackPos ?? 0) > 0.5;
+
       let x = 0, y = 0;
-      if (held['ArrowLeft'] || held['a'] || held['A']) x = -1;
-      if (held['ArrowRight'] || held['d'] || held['D']) x = 1;
-      if (held['ArrowUp'] || held['w'] || held['W']) y = -1;
-      if (held['ArrowDown'] || held['s'] || held['S']) y = 1;
+      if (held['ArrowUp'])    x = onTopHalf ? 1 : -1;   // visually up
+      if (held['ArrowDown'])  x = onTopHalf ? -1 : 1;   // visually down
+      if (held['ArrowLeft'])  y = 1;    // brake
+      if (held['ArrowRight']) y = -1;   // boost
       const active = x !== 0 || y !== 0;
       const cx = 100, cy = (canvasRef.current?.offsetHeight ?? 400) - 100;
       stateRef.current = {
@@ -312,19 +325,25 @@ export default function Game() {
     };
     const onKeyDown = (e: KeyboardEvent) => {
       audio.unlock();
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();
       held[e.key] = true;
       update();
-      if (e.key === ' ' || e.key === 'Enter') {
+      if (e.key === ' ') {
+        e.preventDefault();
         const s = stateRef.current;
         if (['jam_end', 'game_over'].includes(s.phase)) advancePhase();
         else if (s.leadJammer === s.playerTeam && s.phase === 'scoring') {
           stateRef.current = { ...stateRef.current, calloffPressed: true };
         }
       }
-      if (e.key === 'Shift' || e.key === 'z' || e.key === 'Z') {
+      if (e.key === 'Enter') {
+        const s = stateRef.current;
+        if (['jam_end', 'game_over'].includes(s.phase)) advancePhase();
+      }
+      if (e.key === 'a' || e.key === 'A') {
         turboTouchRef.current = true;
       }
-      if (e.key === 'x' || e.key === 'X') {
+      if (e.key === 's' || e.key === 'S') {
         pushTouchRef.current = true;
       }
     };

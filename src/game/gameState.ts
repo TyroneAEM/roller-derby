@@ -7,12 +7,15 @@ const TURBO_COOLDOWN = 6000;
 
 function makeBlockers(team: Team, startPos: number): Character[] {
   const isKitty = team === 'kitty';
+  // Kitty: inner/outer/inner/outer — Unicorn: outer/inner/outer/inner
+  // so interleaved blockers land on opposite sides of the track
+  const baseLane = isKitty ? 0.25 : 0.75;
   return [0, 1, 2, 3].map(i => ({
     id: `${team}-blocker-${i}`,
     team,
     role: i === 0 ? 'pivot' : 'blocker',
-    trackPos: startPos + i * 0.015,
-    lane: 0.25 + (i % 2) * 0.5,
+    trackPos: startPos + i * 0.08,
+    lane: baseLane + (i % 2) * (isKitty ? 0.5 : -0.5),
     speed: 0,
     emoji: isKitty ? '🐱' : '🦄',
     label: i === 0 ? 'Pivot' : `B${i}`,
@@ -65,7 +68,7 @@ export function createInitialState(playerTeam: Team): GameState {
     characters: [
       kittyJammer, unicornJammer,
       ...makeBlockers('kitty', packPos),
-      ...makeBlockers('unicorn', packPos + 0.025),
+      ...makeBlockers('unicorn', packPos + 0.04),
       ...refs,
     ],
     joystick: { active: false, baseX: 0, baseY: 0, tipX: 0, tipY: 0 },
@@ -80,6 +83,7 @@ export function createInitialState(playerTeam: Team): GameState {
     grandSlam: { active: false, timer: 0, x: 0, y: 0 },
     screenFlash: 0,
     pushCooldown: 0,
+    sinBin: 0,
   };
 }
 
